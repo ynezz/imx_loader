@@ -184,7 +184,6 @@ static libusb_device *find_imx_dev(libusb_device **devs, struct mach_id **pp_id,
 			return dev;
 		}
 	}
-	fprintf(stderr, "no matching USB device found\n");
 	*pp_id = NULL;
 	return NULL;
 }
@@ -411,6 +410,7 @@ int main(int argc, char * const argv[])
 	libusb_device **devs;
 	libusb_device *dev;
 	int err, ret = 0;
+	int retry = 50;
 	ssize_t cnt;
 	libusb_device_handle *h = NULL;
 	int config = 0;
@@ -440,16 +440,24 @@ int main(int argc, char * const argv[])
 	if (err < 0)
 		return EXIT_FAILURE;
 
-	cnt = libusb_get_device_list(NULL, &devs);
-	if (cnt < 0) {
-		ret = EXIT_FAILURE;
-		goto out_deinit_usb;
+	printf("Trying to find matching USB device...\n");
+	while (retry--) {
+		cnt = libusb_get_device_list(NULL, &devs);
+		if (cnt < 0) {
+			ret = EXIT_FAILURE;
+			goto out_deinit_usb;
+		}
+
+		dev = find_imx_dev(devs, &mach, list);
+		if (dev)
+			break;
+
+		libusb_free_device_list(devs, 1);
+		usleep(100000);
 	}
 
-//	print_devs(devs);
-	dev = find_imx_dev(devs, &mach, list);
 	if (!dev) {
-		libusb_free_device_list(devs, 1);
+		fprintf(stderr, "no matching USB device found\n");
 		ret = EXIT_FAILURE;
 		goto out_deinit_usb;
 	}
