@@ -304,35 +304,28 @@ int transfer_bulk(struct sdp_dev *dev, int report, unsigned char *p, unsigned in
 	return err;
 }
 
-libusb_device_handle * open_vid_pid(struct mach_id *mach, struct sdp_dev *p_id)
+int imx_claim(libusb_device_handle *h, struct sdp_dev *p_id)
 {
-	int r = libusb_init(NULL);
 	int err;
-	libusb_device_handle *h;
-	h = libusb_open_device_with_vid_pid(NULL, mach->vid, mach->pid);
-	if (!h) {
-		printf("%s:Could not open device vid=0x%x pid=0x%x\n", __func__,
-				mach->vid, mach->pid);
-		goto err1;
-	}
+
 	if (libusb_kernel_driver_active(h, 0))
 		libusb_detach_kernel_driver(h, 0);
+
 	err = libusb_claim_interface(h, 0);
 	if (err) {
-		printf("claim failed, err=%i\n", err);
-		goto err2;
+		fprintf(stderr, "Claim failed, err=%i\n", err);
+		return -1;
 	}
+
 	p_id->priv = h;
 	err = do_status(p_id);
-	if (!err)
-		return h;
-	printf("status failed, err=%i\n", err);
-err2:
-	libusb_release_interface(h, 0);
-	libusb_close(h);
-err1:
-	libusb_exit(NULL);
-	return NULL;
+	if (err) {
+		libusb_release_interface(h, 0);
+		fprintf(stderr, "status failed, err=%i\n", err);
+		return -1;
+	}
+
+	return 0;
 }
 
 #define ARRAY_SIZE(w) sizeof(w)/sizeof(w[0])
@@ -465,8 +458,8 @@ int main(int argc, char * const argv[])
 	err = libusb_open(dev, &h);
 	libusb_free_device_list(devs, 1);
 	if (err < 0) {
-		fprintf(stderr, "%s:Could not open device vid=0x%x pid=0x%x err=%d\n",
-			__func__, mach->vid, mach->pid, err);
+		fprintf(stderr, "Could not open device vid=0x%x pid=0x%x err=%d\n",
+			mach->vid, mach->pid, err);
 		ret = EXIT_FAILURE;
 		goto out_deinit_usb;
 	}
@@ -489,26 +482,12 @@ int main(int argc, char * const argv[])
 	if (p_id->mode == MODE_BULK)
 		p_id->transfer = &transfer_bulk;
 
-	// USB private pointer is libusb device handle...
-	p_id->priv = h;
-
 	libusb_get_configuration(h, &config);
 	printf("%04x:%04x(%s) bConfigurationValue =%x\n",
 			mach->vid, mach->pid, p_id->name, config);
 
-	if (libusb_kernel_driver_active(h, 0))
-		 libusb_detach_kernel_driver(h, 0);
-
-	err = libusb_claim_interface(h, 0);
+	err = imx_claim(h, p_id);
 	if (err) {
-		fprintf(stderr, "Claim failed\n");
-		ret = EXIT_FAILURE;
-		goto out_close_usb;
-	}
-	printf("Interface 0 claimed\n");
-	err = do_status(p_id);
-	if (err) {
-		fprintf(stderr, "status failed\n");
 		ret = EXIT_FAILURE;
 		goto out_close_usb;
 	}
@@ -522,7 +501,7 @@ int main(int argc, char * const argv[])
 	if (curr == NULL) {
 		fprintf(stderr, "no job found\n"); 
 		ret = EXIT_FAILURE;
-		goto out_close_usb;
+		goto out_release_interface;
 	}
 
 	while (curr) {
@@ -545,14 +524,19 @@ int main(int argc, char * const argv[])
 			/* Rediscovers device */
 			libusb_release_interface(h, 0);
 			libusb_close(h);
-			libusb_exit(NULL);
+
 			for (retry = 0; retry < 10; retry++) {
-				printf("sleeping\n");
 				sleep(3);
-				printf("done sleeping\n");
-				h = open_vid_pid(mach, p_id);
-				if (h)
-					break;
+				h = libusb_open_device_with_vid_pid(NULL, mach->vid, mach->pid);
+				if (!h) {
+					fprintf(stderr, "Could not open device vid=0x%x pid=0x%x err=%d\n",
+						mach->vid, mach->pid, err);
+					continue;
+				}
+
+				err = imx_claim(h, p_id);
+				if (err)
+					goto out_close_usb;
 			}
 			if (!h)
 				goto out_deinit_usb;
@@ -564,6 +548,7 @@ int main(int argc, char * const argv[])
 		curr = curr->next;
 	}
 
+out_release_interface:
 	libusb_release_interface(h, 0);
 out_close_usb:
 	libusb_close(h);
