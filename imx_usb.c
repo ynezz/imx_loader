@@ -317,6 +317,8 @@ void print_usage(void)
 		"   -h --help		Show this help\n"
 		"   -v --verify		Verify downloaded data\n"
 		"   -d --debugmode	Enable debug logs\n"
+		"   -b --batch		Enable batch mode (iterates through all device\n"
+		"			configurations sequentially)\n"
 		"   -c --configdir=DIR	Reading configuration directory from non standard\n"
 		"			directory.\n"
 		"\n"
@@ -329,7 +331,7 @@ void print_usage(void)
 }
 
 int parse_opts(int argc, char * const *argv, char const **configdir,
-		int *verify, struct sdp_work **cmd_head)
+		int *verify, int *batch, struct sdp_work **cmd_head)
 {
 	int c;
 
@@ -337,11 +339,12 @@ int parse_opts(int argc, char * const *argv, char const **configdir,
 		{"help",	no_argument, 		0, 'h' },
 		{"debugmode",	no_argument, 		0, 'd' },
 		{"verify",	no_argument, 		0, 'v' },
+		{"batch",	no_argument, 		0, 'b' },
 		{"configdir",	required_argument, 	0, 'c' },
 		{0,		0,			0, 0 },
 	};
 
-	while ((c = getopt_long(argc, argv, "+hdvc:", long_options, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "+hdvbc:", long_options, NULL)) != -1) {
 		switch (c)
 		{
 		case 'h':
@@ -356,6 +359,9 @@ int parse_opts(int argc, char * const *argv, char const **configdir,
 			break;
 		case 'c':
 			*configdir = optarg;
+			break;
+		case 'b':
+			*batch = 1;
 			break;
 		}
 	}
@@ -387,7 +393,7 @@ int do_work(struct sdp_dev *p_id, struct sdp_work **work, int verify)
 
 	err = libusb_claim_interface(h, 0);
 	if (err) {
-		fprintf(stderr, "claim interface failed\n");
+		fprintf(stderr, "claim interface failed, err=%d\n", err);
 		return err;
 	}
 	printf("Interface 0 claimed\n");
@@ -547,16 +553,95 @@ out_deinit_usb:
 	return err;
 }
 
+int do_batch_dev(char const *base_path, char const *conf_path,
+		struct mach_id *mach, int verify)
+{
+	struct sdp_dev *p_id;
+	int err = 0;
+	struct sdp_work *curr;
+	libusb_device_handle *h = NULL;
+	char const *conf;
+
+	err = libusb_init(NULL);
+	if (err < 0)
+		return err;
+
+	while (mach) {
+		// Get machine specific configuration file..
+		conf = conf_file_name(mach->file_name, base_path, conf_path);
+		if (conf == NULL) {
+			err = LIBUSB_ERROR_OTHER;
+			break;
+		}
+
+		p_id = parse_conf(conf);
+		if (!p_id) {
+			err = LIBUSB_ERROR_OTHER;
+			break;
+		}
+
+		// Always use work from config file...
+		curr = p_id->work;
+		if (curr == NULL) {
+			fprintf(stderr, "no job found\n");
+			err = LIBUSB_ERROR_OTHER;
+			break;
+		}
+
+		// Wait for device...
+		printf("Trying to open device vid=0x%04x pid=0x%04x", mach->vid, mach->pid);
+		for (int retry = 0; retry < 50; retry++) {
+			h = libusb_open_device_with_vid_pid(NULL, mach->vid, mach->pid);
+			if (h)
+				break;
+
+			msleep(500);
+			if (retry % 2)
+				printf(".");
+		}
+		printf("\n");
+		if (!h) {
+			err = LIBUSB_ERROR_NO_DEVICE;
+			fprintf(stderr, "Could not open device vid=0x%04x pid=0x%04x\n",
+				mach->vid, mach->pid);
+			break;
+		}
+
+		if (p_id->mode == MODE_HID)
+			p_id->transfer = &transfer_hid;
+		if (p_id->mode == MODE_BULK)
+			p_id->transfer = &transfer_bulk;
+
+		// USB private pointer is libusb device handle...
+		p_id->priv = h;
+
+		err = do_work(p_id, &curr, verify);
+		dbg_printf("do_work finished with err=%d, curr=%p\n", err, curr);
+
+		libusb_close(h);
+
+		if (err < 0)
+			break;
+
+		mach = mach->next;
+	}
+
+	libusb_exit(NULL);
+
+	return err;
+}
+
 int main(int argc, char * const argv[])
 {
 	int err;
 	int verify = 0;
+	int batch = 0;
 	struct sdp_work *cmd_head = NULL;
 	char const *conf;
 	char const *base_path = get_base_path(argv[0]);
 	char const *conf_path = get_global_conf_path();
 
-	err = parse_opts(argc, argv, &conf_path, &verify, &cmd_head);
+	err = parse_opts(argc, argv, &conf_path, &verify, &batch, &cmd_head);
 	if (err < 0)
 		return EXIT_FAILURE;
 	else if (err > 0)
@@ -571,7 +656,11 @@ int main(int argc, char * const argv[])
 	if (!list)
 		return EXIT_FAILURE;
 
-	err = do_autodetect_dev(base_path, conf_path, list, verify, cmd_head);
+	if (batch)
+		err = do_batch_dev(base_path, conf_path, list, verify);
+	else
+		err = do_autodetect_dev(base_path, conf_path, list, verify, cmd_head);
+
 	if (err < 0)
 		return EXIT_FAILURE;
 
