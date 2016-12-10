@@ -557,7 +557,7 @@ int do_batch_dev(char const *base_path, char const *conf_path,
 		struct mach_id *mach, int verify)
 {
 	struct sdp_dev *p_id;
-	int err = 0;
+	int err = 0, retry = 0;
 	struct sdp_work *curr;
 	libusb_device_handle *h = NULL;
 	char const *conf;
@@ -620,8 +620,17 @@ int do_batch_dev(char const *base_path, char const *conf_path,
 
 		libusb_close(h);
 
-		if (err < 0)
-			break;
+		if (err < 0) {
+			if (retry > 5) {
+				printf("Giving up...\n");
+				break;
+			}
+
+			// Retry the same machine...
+			printf("Retrying...\n");
+			err = 0;
+			continue;
+		}
 
 		mach = mach->next;
 	}
