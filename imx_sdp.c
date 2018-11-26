@@ -289,6 +289,14 @@ void parse_file_work(struct sdp_work *curr, const char *filename, const char *p)
 			curr->load_addr = get_val(&p, 16);
 			p = skip(p,',');
 		}
+		if (strncmp(p, "load_size", 9) == 0) {
+			p += 9;
+			if (strncmp(p, "0x", 2) == 0)
+				curr->load_size = get_val(&p, 16);
+			else
+				curr->load_size = get_val(&p, 10);
+			p = skip(p,',');
+		}
 		if (strncmp(p, "jump", 4) == 0) {
 			p += 4;
 			curr->jump_mode = J_ADDR;
