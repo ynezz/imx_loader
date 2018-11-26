@@ -1656,8 +1656,13 @@ int DoIRomDownload(struct sdp_dev *dev, struct sdp_work *curr, int verify)
 		}
 	}
 	if (dev->mode == MODE_HID) if (type == FT_APP) {
-		printf("jumping to 0x%08x\n", header_addr);
-		jump_command.addr = BE32(header_addr);
+		if (curr->jump_addr > 0) {
+			printf("jumping to jump_addr: 0x%08x\n", curr->jump_addr);
+			jump_command.addr = BE32(curr->jump_addr);
+		} else {
+			printf("jumping to header_addr: 0x%08x\n", header_addr);
+			jump_command.addr = BE32(header_addr);
+		}
 		//Any command will initiate jump for mx51, jump address is ignored by mx51
 		retry = 0;
 		for (;;) {
